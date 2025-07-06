@@ -1,0 +1,169 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: carlemany_files
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - carlemany-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - carlemany-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  localstack:
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3
+      - AWS_DEFAULT_REGION=us-east-1
+      - EDGE_PORT=4566
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - carlemany-net
+
+  carlemany-backend:
+    build:
+      context: .
+      target: carlemany-backend-prod
+    image: carlemany-backend-prod
+    volumes:
+      - type: bind
+        source: .
+        target: /carlemany-backend
+    ports:
+      - "8080:80"
+    env_file:
+     - .env
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: carlemany_files
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      S3_BUCKET_NAME: carlemany-files
+    networks:
+      - carlemany-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_started
+
+  make_migrations:
+    build:
+      context: .
+      target: carlemany-backend-dev
+    image: carlemany-backend-dev
+    volumes:
+      - type: bind
+        source: .
+        target: /carlemany-backend
+    env_file:
+     - .env
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: carlemany_files
+    networks:
+      - carlemany-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: aerich migrate
+
+  migrate:
+    build:
+      context: .
+      target: carlemany-backend-dev
+    image: carlemany-backend-dev
+    volumes:
+      - type: bind
+        source: .
+        target: /carlemany-backend
+    env_file:
+     - .env
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: carlemany_files
+    networks:
+      - carlemany-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: aerich upgrade
+
+  black:
+    image: carlemany-backend-base:latest
+    volumes:
+      - type: bind
+        source: ./ 
+        target: /carlemany-backend
+        read_only: true
+    entrypoint: sh -c "black --config .black --check --diff ."
+
+  autoformatter:
+    image: carlemany-backend-dev:latest
+    volumes:
+      - type: bind
+        source: ./ 
+        target: /carlemany-backend
+        read_only: true
+    entrypoint: sh -c "black --config .black . && ruff check --fix"
+
+  test: &test
+    image: carlemany-backend-dev:latest
+    env_file:
+     - .env
+    volumes:
+      - type: bind
+        source: ./ 
+        target: /carlemany-backend
+    networks:
+      - carlemany-net
+    entrypoint: pytest --maxfail=10
+
+  test-cov:
+    <<: *test
+    entrypoint: pytest --maxfail=10 --cov --cov-report=term --cov-report=html --junitxml=tests/test-results/junit.xml
+
+volumes:
+  postgres_data:
+  localstack_data:
+
+networks:
+  carlemany-net:
